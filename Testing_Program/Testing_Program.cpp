@@ -3,10 +3,19 @@
 #include <iostream>
 #include <string>
 #include <winbase.h>
+#include <Winhttp.h>
+#include <Urlmon.h>
+#include <wininet.h>
+#include <shellapi.h>
+#include <winternl.h>
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "crypt32.lib")
 #pragma comment(lib, "kernel32.lib")
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "urlmon.lib")
+#pragma comment(lib, "wininet.lib")
+#pragma comment(lib, "ntdll.lib")
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0600 // Windows Vista or later
 #endif
@@ -28,7 +37,7 @@ int main() {
     std::cout << "Socket created: " << sock << std::endl;
     struct addrinfo hints, * res;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;
+    hints.ai_family = AF_INET; 
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
     if (getaddrinfo("example.com", "80", &hints, &res) != 0) {
@@ -55,7 +64,7 @@ int main() {
         WSACleanup();
         return 1;
     }
-    freeaddrinfo(res);
+    freeaddrinfo(res); 
     std::cout << "Connected to server" << std::endl;
     const char* request = "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
     std::cout << "Sending request..." << std::endl;
@@ -92,7 +101,10 @@ int main() {
     CreateFileA(filenameB, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     hFile = CreateFileW(filename, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     std::cout << "end here " << std::endl;
-
+	WinHttpOpenRequest(hFile, L"GET", NULL, NULL, NULL, NULL, WINHTTP_FLAG_REFRESH);
+	URLOpenStreamW(NULL, L"http://example.com", NULL, 0);
+	InternetOpenA(NULL, INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0);
+	ShellExecuteA(NULL, "open", "http://example.com", NULL, NULL, SW_SHOWNORMAL);
     return 0;
 }
 
