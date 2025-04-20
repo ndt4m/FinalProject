@@ -79,10 +79,27 @@ NtQueryInformationThread_t NtQueryInformationThread =
 
 
 std::string getCurrentTimestamp() {
+    // Get current system time for the date & wall-clock part
     SYSTEMTIME st;
     GetSystemTime(&st);
-    char buffer[20];
-    sprintf_s(buffer, "%04d-%02d-%02d %02d:%02d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+
+    // High-precision counter part
+    LARGE_INTEGER frequency, counter;
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&counter);
+
+    // Convert counter to microseconds
+    double timeInMicro = (counter.QuadPart % frequency.QuadPart) * 1'000'000.0 / frequency.QuadPart;
+    int microseconds = static_cast<int>(timeInMicro);
+
+    char buffer[40];
+    sprintf_s(buffer, sizeof(buffer),
+        "%04d-%02d-%02d %02d:%02d:%02d.%03d%03d",  // Shows up to microseconds
+        st.wYear, st.wMonth, st.wDay,
+        st.wHour, st.wMinute, st.wSecond,
+        st.wMilliseconds,
+        microseconds % 1000); // last 3 digits = microseconds remainder
+
     return std::string(buffer);
 }
 
