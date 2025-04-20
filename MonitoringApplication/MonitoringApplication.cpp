@@ -8,6 +8,20 @@
 
 const wchar_t* PIPE_NAME = TEXT("\\\\.\\pipe\\RATMonitorPipe");
 
+std::string getCurrentTimestamp() {
+    SYSTEMTIME st;
+    GetLocalTime(&st); // Use GetSystemTime if you prefer UTC
+
+    char buffer[32];
+    sprintf_s(buffer, sizeof(buffer),
+        "%04d-%02d-%02d_%02d-%02d-%02d",
+        st.wYear, st.wMonth, st.wDay,
+        st.wHour, st.wMinute, st.wSecond);
+
+    return std::string(buffer);
+}
+
+
 // Function to inject the DLL into the RAT process (unchanged)
 void InjectDLL(DWORD processId, const char* dllPath) {
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processId);
@@ -49,7 +63,8 @@ void InjectDLL(DWORD processId, const char* dllPath) {
 
 // Logging thread to read from the pipe and write to a JSON file
 void LoggingThread(HANDLE hPipe, std::atomic<bool>* stopLogging) {
-    std::ofstream log_file("api_logs.jsonl"); // Open the JSON Lines file
+
+    std::ofstream log_file("api_logs_" + getCurrentTimestamp() + ".jsonl"); // Open the JSON Lines file
     if (!log_file.is_open()) {
         std::cerr << "Failed to open log file" << std::endl;
         return;
@@ -161,6 +176,6 @@ int main(int argc, char* argv[]) {
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
 	////exit(0);
-    std::cout << "Monitoring completed. Logs saved to api_logs.jsonl" << std::endl;
+    std::cout << "Monitoring completed" << std::endl;
     return 0;
 }
