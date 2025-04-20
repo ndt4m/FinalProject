@@ -122,9 +122,9 @@ int main(int argc, char* argv[]) {
         PIPE_ACCESS_INBOUND,
         PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
         PIPE_UNLIMITED_INSTANCES,
-        4096,
-        4096,
-        0,
+        4096*5,
+        4096*5,
+        10000,
         NULL
     );
     if (hPipe == INVALID_HANDLE_VALUE) {
@@ -152,14 +152,15 @@ int main(int argc, char* argv[]) {
 
 
     WaitForSingleObject(pi.hProcess, INFINITE);
+    //exit(0);
     stopLogging = true;
+ //   CancelIoEx(hPipe, nullptr);
     loggingThread.join();
-
     DisconnectNamedPipe(hPipe);
     CloseHandle(hPipe);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
-
+	////exit(0);
     std::cout << "Monitoring completed. Logs saved to api_logs.jsonl" << std::endl;
     return 0;
 }

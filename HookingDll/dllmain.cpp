@@ -18,10 +18,10 @@
 #include <wininet.h>  
 #include <winhttp.h>  
 #include <shellapi.h>
-#include <psapi.h>         // For GetModuleFileNameExW, GetModuleInformation
-#include <tlhelp32.h>      // For Thread32First, Thread32Next
-#pragma comment(lib, "psapi.lib")    // Link with psapi.lib for process/module info
-#pragma comment(lib, "advapi32.lib") // For AdjustTokenPrivileges, LookupPrivilegeName
+#include <psapi.h>         
+#include <tlhelp32.h>      
+#pragma comment(lib, "psapi.lib")   
+#pragma comment(lib, "advapi32.lib") 
 #pragma comment(lib, "detours.lib")
 #pragma comment(lib, "Dbghelp.lib")
 #pragma comment(lib, "Crypt32.lib")
@@ -33,7 +33,15 @@
 
 const wchar_t* PIPE_NAME = TEXT("\\\\.\\pipe\\RATMonitorPipe");
 HANDLE hPipe = INVALID_HANDLE_VALUE;
-
+HMODULE hKernelBaseMod = LoadLibrary(L"kernelbase.dll");
+typedef BOOL(WINAPI* PFN_CopyFileExW)(
+    LPCWSTR lpExistingFileName,
+    LPCWSTR lpNewFileName,
+    LPPROGRESS_ROUTINE lpProgressRoutine,
+    LPVOID lpData,
+    LPBOOL pbCancel,
+    DWORD dwCopyFlags
+);
 typedef enum _PROCESSINFOCLASS {
     ProcessBasicInformation = 0,
     ProcessDebugPort = 7,
@@ -298,7 +306,7 @@ HINTERNET(WINAPI* OriginalWinHttpConnect)(HINTERNET, LPCWSTR, INTERNET_PORT, DWO
 HINTERNET(WINAPI* OriginalWinHttpOpenRequest)(HINTERNET, LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR*, DWORD) = WinHttpOpenRequest;
 BOOL(WINAPI* OriginalShellExecuteExW)(SHELLEXECUTEINFOW*) = ShellExecuteExW;
 BOOL(WINAPI* OriginalMoveFileW)(LPCWSTR, LPCWSTR) = MoveFileW;
-BOOL(WINAPI* OriginalCopyFileExW)(LPCWSTR, LPCWSTR, LPPROGRESS_ROUTINE, LPVOID, LPBOOL, DWORD) = CopyFileExW;
+BOOL(WINAPI* OriginalCopyFileExW)(LPCWSTR, LPCWSTR, LPPROGRESS_ROUTINE, LPVOID, LPBOOL, DWORD) = (PFN_CopyFileExW) GetProcAddress(hKernelBaseMod, "CopyFileExW");
 LONG(WINAPI* OriginalRegSetValueExW)(HKEY, LPCWSTR, DWORD, DWORD, const BYTE*, DWORD) = RegSetValueExW;
 LONG(WINAPI* OriginalRegDeleteKeyExA)(HKEY, LPCSTR, REGSAM, DWORD) = RegDeleteKeyExA;
 LONG(WINAPI* OriginalRegDeleteKeyExW)(HKEY, LPCWSTR, REGSAM, DWORD) = RegDeleteKeyExW;
@@ -335,16 +343,52 @@ BOOL(WINAPI* OriginalStartServiceW)(SC_HANDLE, DWORD, LPCWSTR*) = StartServiceW;
 HANDLE(WINAPI* OriginalCreateMutexW)(LPSECURITY_ATTRIBUTES, BOOL, LPCWSTR) = CreateMutexW;
 BOOL(WINAPI* OriginalCheckRemoteDebuggerPresent)(HANDLE, PBOOL) = CheckRemoteDebuggerPresent;
 int (WINAPI* OriginalGetLocaleInfoW)(LCID, LCTYPE, LPWSTR, int) = GetLocaleInfoW;
-
+BOOL (WINAPI* OriginalCloseHandle)(HANDLE) = CloseHandle;
+int (WSAAPI* OriginalWSAConnect)(SOCKET, const sockaddr*, int, LPWSABUF, LPWSABUF, LPQOS, LPQOS) = WSAConnect;
 
 void SendLog(const std::string& log) {
-    if (hPipe != INVALID_HANDLE_VALUE) {
-        DWORD bytesWritten;
+    DWORD bytesWritten;
+    BOOL res = OriginalWriteFile(hPipe, log.c_str(), log.size(), &bytesWritten, NULL);
+    if (res == 0) {
+        hPipe = OriginalCreateFileW(PIPE_NAME, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+        if (!WaitNamedPipe(PIPE_NAME, 5000)) {
+            printf("WaitNamedPipe timed out.\n");
+            return;
+        }
         OriginalWriteFile(hPipe, log.c_str(), log.size(), &bytesWritten, NULL);
     }
+    
 }
 
 // Hooking functions
+
+int WSAAPI Hooking_WSAConnect(SOCKET s, const sockaddr* name, int namelen, LPWSABUF lpCallerData, LPWSABUF lpCalleeData, LPQOS lpSQOS, LPQOS lpGQOS) {
+    int result = OriginalWSAConnect(s, name, namelen, lpCallerData, lpCalleeData, lpSQOS, lpGQOS);
+    std::string timestamp = getCurrentTimestamp();
+    std::string api_name = "WSAConnect";
+    std::string addr_str = sockaddr_to_string(name, namelen);
+    std::string log_message = "addr=" + addr_str +
+        ", return=" + std::to_string(result);
+    if (result == SOCKET_ERROR) {
+        log_message += ", error=" + std::to_string(WSAGetLastError());
+    }
+    SendLog(timestamp + "|" + api_name + "|" + log_message);
+    return result;
+}
+
+BOOL WINAPI Hooking_CloseHandle(HANDLE hObject) {
+    BOOL result = 3;
+	if (hObject == hPipe) {
+        std::string timestamp = getCurrentTimestamp();
+        std::string api_name = "CloseHandle";
+        std::string log_message = "hObject=" + std::to_string((uintptr_t)hObject);
+        SendLog(timestamp + "|" + api_name + "|" + log_message);
+	}
+    else {
+         result = OriginalCloseHandle(hObject);
+    }
+	return result;
+}
 
 int WINAPI Hooking_GetLocaleInfoW(LCID Locale, LCTYPE LCType, LPWSTR lpLCData, int cchData) {
     int result = OriginalGetLocaleInfoW(Locale, LCType, lpLCData, cchData);
@@ -501,14 +545,27 @@ BOOL WINAPI Hooking_AdjustTokenPrivileges(HANDLE TokenHandle, BOOL DisableAllPri
 }
 
 FARPROC WINAPI Hooking_GetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
-    FARPROC result = OriginalGetProcAddress(hModule, lpProcName);
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "GetProcAddress";
     WCHAR modPath[MAX_PATH];
     std::string modName = GetModuleFileNameW(hModule, modPath, MAX_PATH) ? wideToUtf8(modPath) : "unknown";
+    // Handle lpProcName (string or ordinal)
+    std::string procName;
+    if (lpProcName == NULL) {
+        procName = "null";
+    }
+    else if (((ULONG_PTR)lpProcName >> 16) == 0) {
+        // Ordinal case: lpProcName is an ordinal number
+        WORD ordinal = (WORD)(ULONG_PTR)lpProcName;
+        procName = "ordinal(" + std::to_string(ordinal) + ")";
+    }
+    else {
+        // String case: lpProcName is a function name
+        procName = std::string(lpProcName);
+    }
     std::string log_message = "hModule=" + modName +
-        ", lpProcName=" + (lpProcName ? std::string(lpProcName) : "null") +
-        ", return=" + std::to_string((uintptr_t)result);
+        ", lpProcName=" + procName;
+    FARPROC result = OriginalGetProcAddress(hModule, lpProcName);
     SendLog(timestamp + "|" + api_name + "|" + log_message);
     return result;
 }
@@ -688,7 +745,7 @@ HHOOK WINAPI Hooking_SetWindowsHookExW(int idHook, HOOKPROC lpfn, HINSTANCE hmod
 
 DWORD WINAPI Hooking_SuspendThread(HANDLE hThread) {
     std::string timestamp = getCurrentTimestamp();
-    std::string api_name = "ResumeThread";
+    std::string api_name = "SuspendThread";
     DWORD pid = GetProcessIdOfThread(hThread);
     std::string procName = "unknown";
     auto pair_res = std::pair<std::string, uintptr_t>{ "unknown", 0 };
@@ -1549,9 +1606,9 @@ HRESULT WINAPI Hooking_URLDownloadToFileW(LPUNKNOWN pCaller, LPCWSTR szURL, LPCW
 // Define originals and hooks based on architecture
 #ifdef _WIN64
 std::vector<PVOID*> originals = {
-    (PVOID*)&OriginalCreateFileA,
-    (PVOID*)&OriginalCreateFileW,
-    (PVOID*)&OriginalSocket,
+    //(PVOID*)&OriginalCreateFileA,
+    //(PVOID*)&OriginalCreateFileW,
+    //(PVOID*)&OriginalSocket,
     (PVOID*)&OriginalConnect,
     (PVOID*)&OriginalSend,
     (PVOID*)&OriginalRecv,
@@ -1623,12 +1680,14 @@ std::vector<PVOID*> originals = {
     (PVOID*)&OriginalStartServiceW,
     (PVOID*)&OriginalCreateMutexW,
     (PVOID*)&OriginalCheckRemoteDebuggerPresent,
-    (PVOID*)&OriginalGetLocaleInfoW
+    (PVOID*)&OriginalGetLocaleInfoW,
+    (PVOID*)&OriginalCloseHandle,
+    (PVOID*)&OriginalWSAConnect
 };
 std::vector<PVOID> hooks = {
-    Hooking_CreateFileA,
-    Hooking_CreateFileW,
-    Hooking_socket,
+    //Hooking_CreateFileA,
+    //Hooking_CreateFileW,
+    //Hooking_socket,
     Hooking_connect,
     Hooking_send,
     Hooking_recv,
@@ -1700,12 +1759,14 @@ std::vector<PVOID> hooks = {
     Hooking_StartServiceW,
     Hooking_CreateMutexW,
     Hooking_CheckRemoteDebuggerPresent,
-    Hooking_GetLocaleInfoW
+    Hooking_GetLocaleInfoW,
+    Hooking_CloseHandle,
+    Hooking_WSAConnect
 };
 #else
 std::vector<PVOID*> originals = {
-    (PVOID*)&OriginalCreateFileW,
-    (PVOID*)&OriginalSocket,
+    //(PVOID*)&OriginalCreateFileW,
+    //(PVOID*)&OriginalSocket,
     (PVOID*)&OriginalConnect,
     (PVOID*)&OriginalSend,
     (PVOID*)&OriginalRecv,
@@ -1777,11 +1838,13 @@ std::vector<PVOID*> originals = {
     (PVOID*)&OriginalStartServiceW,
     (PVOID*)&OriginalCreateMutexW,
     (PVOID*)&OriginalCheckRemoteDebuggerPresent,
-	(PVOID*)&OriginalGetLocaleInfoW
+	(PVOID*)&OriginalGetLocaleInfoW,
+	(PVOID*)&OriginalCloseHandle,
+	(PVOID*)&OriginalWSAConnect
 };
 std::vector<PVOID> hooks = {
-    Hooking_CreateFileW,
-    Hooking_socket,
+    //Hooking_CreateFileW,
+    //Hooking_socket,
     Hooking_connect,
     Hooking_send,
     Hooking_recv,
@@ -1853,7 +1916,9 @@ std::vector<PVOID> hooks = {
     Hooking_StartServiceW,
     Hooking_CreateMutexW,
     Hooking_CheckRemoteDebuggerPresent,
-	Hooking_GetLocaleInfoW
+	Hooking_GetLocaleInfoW,
+	Hooking_CloseHandle,
+	Hooking_WSAConnect
 };
 #endif
 
