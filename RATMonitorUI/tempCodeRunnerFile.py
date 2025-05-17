@@ -1,0 +1,2 @@
+
+                    timer.setSingleShot(True)

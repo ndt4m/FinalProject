@@ -1,7 +1,7 @@
 ﻿  dllmain.cpp
   Generating code
-  154 of 452 functions (34.1%) were compiled, the rest were copied from previous compilation.
-    1 functions were new in current compilation
-    0 functions had inline decision re-evaluated but remain unchanged
+  80 of 452 functions (17.7%) were compiled, the rest were copied from previous compilation.
+    0 functions were new in current compilation
+    81 functions had inline decision re-evaluated but remain unchanged
   Finished generating code
   HookingDll.vcxproj -> C:\Users\HP\Documents\FinalProject\FinalProject\MonitoringApplication\Release\HookingDll.dll

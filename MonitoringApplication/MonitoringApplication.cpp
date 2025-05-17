@@ -62,9 +62,10 @@ void InjectDLL(DWORD processId, const char* dllPath) {
 }
 
 // Logging thread to read from the pipe and write to a JSON file
-void LoggingThread(HANDLE hPipe, std::atomic<bool>* stopLogging) {
+void LoggingThread(HANDLE hPipe, std::atomic<bool>* stopLogging, const std::string& log_filename) {
 
-    std::ofstream log_file("api_logs_" + getCurrentTimestamp() + ".jsonl"); // Open the JSON Lines file
+    //std::ofstream log_file("api_logs_" + getCurrentTimestamp() + ".jsonl"); // Open the JSON Lines file
+    std::ofstream log_file(log_filename);
     if (!log_file.is_open()) {
         std::cerr << "Failed to open log file" << std::endl;
         return;
@@ -127,10 +128,10 @@ void LoggingThread(HANDLE hPipe, std::atomic<bool>* stopLogging) {
 }
 
 int main(int argc, char* argv[]) {
-     if (argc != 3) {
-         std::cerr << "Usage: monitor.exe <path_to_rat.exe> <path_to_hooking_dll.dll>" << std::endl;
-         return 1;
-     }
+    if (argc != 4) {
+        std::cerr << "Usage: monitor.exe <path_to_rat.exe> <path_to_hooking_dll.dll> <log_filename>" << std::endl;
+        return 1;
+    }
 
     HANDLE hPipe = CreateNamedPipe(
         PIPE_NAME,
@@ -146,8 +147,9 @@ int main(int argc, char* argv[]) {
         std::cerr << "Failed to create named pipe: " << GetLastError() << std::endl;
         return 1;
     }
+    std::string log_filename = argv[3];
     std::atomic<bool> stopLogging(false);
-    std::thread loggingThread(LoggingThread, hPipe, &stopLogging);
+    std::thread loggingThread(LoggingThread, hPipe, &stopLogging, log_filename);
 
     const char* ratPath = argv[1];
     const char* dllPath = argv[2];
