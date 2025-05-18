@@ -19,7 +19,8 @@
 #include <winhttp.h>  
 #include <shellapi.h>
 #include <psapi.h>         
-#include <tlhelp32.h>      
+#include <tlhelp32.h>     
+#include <winternl.h>
 #pragma comment(lib, "psapi.lib")   
 #pragma comment(lib, "advapi32.lib") 
 #pragma comment(lib, "detours.lib")
@@ -30,6 +31,13 @@
 #pragma comment(lib, "wininet.lib")
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "shell32.lib")
+// Link with ntdll.dll
+#pragma comment(lib, "ntdll.lib")
+#define ObjectNameInformation 1 // Undocumented
+typedef struct _OBJECT_NAME_INFORMATION {
+    UNICODE_STRING Name;
+} OBJECT_NAME_INFORMATION, * POBJECT_NAME_INFORMATION;
+
 
 const wchar_t* PIPE_NAME = TEXT("\\\\.\\pipe\\RATMonitorPipe");
 HANDLE hPipe = INVALID_HANDLE_VALUE;
@@ -42,40 +50,185 @@ typedef BOOL(WINAPI* PFN_CopyFileExW)(
     LPBOOL pbCancel,
     DWORD dwCopyFlags
 );
-typedef enum _PROCESSINFOCLASS {
-    ProcessBasicInformation = 0,
-    ProcessDebugPort = 7,
-    ProcessWow64Information = 26,
-    ProcessImageFileName = 27,
-    ProcessBreakOnTermination = 29
-} PROCESSINFOCLASS;
-typedef enum _THREADINFOCLASS {
-    ThreadBasicInformation = 0,
-    ThreadQuerySetWin32StartAddress = 9,
-    ThreadQuerySetWin32StartAddressEx = 10
-} THREADINFOCLASS;
+//typedef enum _PROCESSINFOCLASS {
+//    ProcessBasicInformation = 0,
+//    ProcessDebugPort = 7,
+//    ProcessWow64Information = 26,
+//    ProcessImageFileName = 27,
+//    ProcessBreakOnTermination = 29
+//} PROCESSINFOCLASS;
+//typedef enum _THREADINFOCLASS {
+//    ThreadBasicInformation = 0,
+//    ThreadQuerySetWin32StartAddress = 9,
+//    ThreadQuerySetWin32StartAddressEx = 10
+//} THREADINFOCLASS;
+//
+//typedef NTSTATUS(NTAPI* NtQueryInformationThread_t)(
+//    HANDLE ThreadHandle,
+//    THREADINFOCLASS ThreadInformationClass,
+//    PVOID ThreadInformation,
+//    ULONG ThreadInformationLength,
+//    PULONG ReturnLength
+//    );
+//
+//typedef NTSTATUS(NTAPI* NtQueryInformationProcess_t)(
+//    HANDLE ProcessHandle,
+//    PROCESSINFOCLASS ProcessInformationClass,
+//    PVOID ProcessInformation,
+//    ULONG ProcessInformationLength,
+//    PULONG ReturnLength
+//    );
+//
+//typedef NTSTATUS(WINAPI* NtQueryObjectFunc)(
+//    HANDLE Handle,
+//    OBJECT_INFORMATION_CLASS ObjectInformationClass,
+//    PVOID ObjectInformation,
+//    ULONG ObjectInformationLength,
+//    PULONG ReturnLength
+//    );
+//
+//NtQueryObjectFunc NtQueryObject = reinterpret_cast<NtQueryObjectFunc>(
+//    GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryObject"));
+//
+//NtQueryInformationProcess_t NtQueryInformationProcess =
+//reinterpret_cast<NtQueryInformationProcess_t>(GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationProcess"));
+//
+//NtQueryInformationThread_t NtQueryInformationThread =
+//reinterpret_cast<NtQueryInformationThread_t>(GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationThread"));
 
-typedef NTSTATUS(NTAPI* NtQueryInformationThread_t)(
-    HANDLE ThreadHandle,
-    THREADINFOCLASS ThreadInformationClass,
-    PVOID ThreadInformation,
-    ULONG ThreadInformationLength,
-    PULONG ReturnLength
-    );
+std::string wideToUtf8(LPCWSTR wstr) {
+    if (!wstr) return "null";
+    int size = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, nullptr, 0, nullptr, nullptr);
+    if (size == 0) return "";
+    std::string result(size - 1, 0); // Exclude null terminator from length
+    WideCharToMultiByte(CP_UTF8, 0, wstr, -1, &result[0], size, nullptr, nullptr);
+    return result;
+}
 
-typedef NTSTATUS(NTAPI* NtQueryInformationProcess_t)(
-    HANDLE ProcessHandle,
-    PROCESSINFOCLASS ProcessInformationClass,
-    PVOID ProcessInformation,
-    ULONG ProcessInformationLength,
-    PULONG ReturnLength
-    );
+std::string GetRequestUrl(HINTERNET hRequest) {
+    DWORD dwSize = 0;
+    LPWSTR lpUrl = NULL;
+    std::string urlUtf8;
+    // Determine the size of the URL
+    if (!WinHttpQueryOption(hRequest, WINHTTP_OPTION_URL, NULL, &dwSize)) {
+        if (GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
+            // Allocate memory for the URL
+            lpUrl = (LPWSTR)malloc(dwSize);
+            if (lpUrl) {
+                // Retrieve the full URL
+                if (WinHttpQueryOption(hRequest, WINHTTP_OPTION_URL, lpUrl, &dwSize)) {
+                    urlUtf8 = wideToUtf8(lpUrl); // Convert wide string to UTF-8
+                }
+                else {
+                    urlUtf8 = "null";
+                }
+                free(lpUrl); // Free allocated memory
+            }
+            else {
+                urlUtf8 = "null";
+            }
+        }
+        else {
+            urlUtf8 = "null";
+        }
+    }
+    else {
+        urlUtf8 = "null";
+    }
+    return urlUtf8;
+}
 
-NtQueryInformationProcess_t NtQueryInformationProcess =
-(NtQueryInformationProcess_t)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationProcess");
+std::string getUrlFromHandle(HINTERNET hInternet) {
+    char url[2048];
+    DWORD urlLength = sizeof(url);
+    if (InternetQueryOptionA(hInternet, INTERNET_OPTION_URL, url, &urlLength)) {
+        return std::string(url, urlLength);
+    }
+    return "null";
+}
 
-NtQueryInformationThread_t NtQueryInformationThread =
-(NtQueryInformationThread_t)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationThread");
+std::string getPeerInfo(SOCKET s) {
+    struct sockaddr_storage peer_addr;
+    int addrlen = sizeof(peer_addr);
+    if (getpeername(s, (struct sockaddr*)&peer_addr, &addrlen) == 0) {
+        char ip_buf[INET6_ADDRSTRLEN];
+        int port = 0;
+        if (peer_addr.ss_family == AF_INET) {
+            struct sockaddr_in* ipv4 = (struct sockaddr_in*)&peer_addr;
+            inet_ntop(AF_INET, &ipv4->sin_addr, ip_buf, sizeof(ip_buf));
+            port = ntohs(ipv4->sin_port);
+        }
+        else if (peer_addr.ss_family == AF_INET6) {
+            struct sockaddr_in6* ipv6 = (struct sockaddr_in6*)&peer_addr;
+            inet_ntop(AF_INET6, &ipv6->sin6_addr, ip_buf, sizeof(ip_buf));
+            port = ntohs(ipv6->sin6_port);
+        }
+        else {
+            return "addr=null";
+        }
+        return "addr=" + std::string(ip_buf) + ":" + std::to_string(port);
+    }
+    else {
+        return "addr=null";
+    }
+}
+
+// Helper to get the full file path from a HANDLE
+std::wstring GetFullPathFromHFILE(HANDLE hFile) {
+    std::wstring path;
+    DWORD size = MAX_PATH;
+    std::unique_ptr<WCHAR[]> buffer(new WCHAR[size]);
+
+    DWORD length = GetFinalPathNameByHandleW(hFile, buffer.get(), size, FILE_NAME_NORMALIZED);
+    if (length > 0 && length <= size) {
+        path.assign(buffer.get(), length);
+    }
+    else if (length > size) {
+        buffer.reset(new WCHAR[length]);
+        if (GetFinalPathNameByHandleW(hFile, buffer.get(), length, FILE_NAME_NORMALIZED)) {
+            path.assign(buffer.get(), length);
+        }
+    }
+    if (path.empty()) {
+        //std::wcerr << L"Failed to get file path." << std::endl;
+        return L"null";
+    }
+
+    // Remove the \\?\ prefix if present
+    if (path.rfind(L"\\\\?\\", 0) == 0) {
+        path.erase(0, 4);
+    }
+
+    return path;
+}
+
+// Helper to get the full object name of a registry key handle
+std::wstring GetObjectNameFromHandle(HANDLE handle) {
+
+    if (!NtQueryObject) {
+        std::wcerr << L"NtQueryObject not found." << std::endl;
+        return L"null";
+    }
+
+    ULONG len = 0;
+    NTSTATUS status = NtQueryObject(handle, (OBJECT_INFORMATION_CLASS)ObjectNameInformation, nullptr, 0, &len);
+    if (!len) return L"null";
+
+    auto buffer = reinterpret_cast<BYTE*>(malloc(len));
+    if (!buffer) return L"null";
+
+    status = NtQueryObject(handle, (OBJECT_INFORMATION_CLASS)ObjectNameInformation, buffer, len, &len);
+    if (!NT_SUCCESS(status)) {
+        free(buffer);
+        return L"null";
+    }
+
+    auto objName = reinterpret_cast<POBJECT_NAME_INFORMATION>(buffer);
+    std::wstring result(objName->Name.Buffer, objName->Name.Length / sizeof(WCHAR));
+
+    free(buffer);
+    return result;
+}
 
 
 std::string getCurrentTimestamp() {
@@ -103,15 +256,6 @@ std::string getCurrentTimestamp() {
     return std::string(buffer);
 }
 
-std::string wideToUtf8(LPCWSTR wstr) {
-    if (!wstr) return "null";
-    int size = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, nullptr, 0, nullptr, nullptr);
-    if (size == 0) return "";
-    std::string result(size - 1, 0); // Exclude null terminator from length
-    WideCharToMultiByte(CP_UTF8, 0, wstr, -1, &result[0], size, nullptr, nullptr);
-    return result;
-}
-
 
 std::string sockaddr_to_string(const sockaddr* sa, int salen) {
     char ip[INET6_ADDRSTRLEN] = { 0 };
@@ -127,7 +271,7 @@ std::string sockaddr_to_string(const sockaddr* sa, int salen) {
         port = ntohs(sin6->sin6_port);
     }
     else {
-        return "unknown family";
+        return "null";
     }
     return std::string(ip) + ":" + std::to_string(port);
 }
@@ -206,7 +350,7 @@ std::string logInternetBuffersW(const INTERNET_BUFFERSW* pBuffer) {
 
 // Get process name from a handle
 std::string getProcessName(HANDLE hProcess) {
-    WCHAR processName[MAX_PATH] = L"unknown";
+    WCHAR processName[MAX_PATH] = L"null";
     HANDLE hProc = hProcess;
     if (hProc == GetCurrentProcess()) {
         GetModuleFileNameW(NULL, processName, MAX_PATH);
@@ -281,7 +425,7 @@ std::string getServiceName(SC_HANDLE hService) {
         std::string serviceName = serviceConfig.lpServiceStartName;
         return serviceName;
     }
-    return "unknown";
+    return "null";
 }
 
 // Original function pointers
@@ -764,8 +908,8 @@ DWORD WINAPI Hooking_SuspendThread(HANDLE hThread) {
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "SuspendThread";
     DWORD pid = GetProcessIdOfThread(hThread);
-    std::string procName = "unknown";
-    auto pair_res = std::pair<std::string, uintptr_t>{ "unknown", 0 };
+    std::string procName = "null";
+    auto pair_res = std::pair<std::string, uintptr_t>{ "null", 0 };
     if (pid != 0) {
         HANDLE hProc = OriginalOpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
         if (hProc != NULL) {
@@ -790,8 +934,8 @@ DWORD WINAPI Hooking_ResumeThread(HANDLE hThread) {
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "ResumeThread";
     DWORD pid = GetProcessIdOfThread(hThread);
-    std::string procName = "unknown";
-	auto pair_res = std::pair<std::string, uintptr_t>{ "unknown", 0 };
+    std::string procName = "null";
+	auto pair_res = std::pair<std::string, uintptr_t>{ "null", 0 };
     if (pid != 0) {
         HANDLE hProc = OriginalOpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
         if (hProc != NULL) {
@@ -916,7 +1060,7 @@ HANDLE WINAPI Hooking_OpenProcess(DWORD dwDesiredAccess, BOOL bInheritHandle, DW
     HANDLE result = OriginalOpenProcess(dwDesiredAccess, bInheritHandle, dwProcessId);
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "OpenProcess";
-    std::string procName = result ? getProcessName(result) : "unknown";
+    std::string procName = result ? getProcessName(result) : "null";
     std::string log_message = "dwProcessId=" + std::to_string(dwProcessId) +
         ", dwDesiredAccess=" + std::to_string(dwDesiredAccess) +
         ", bInheritHandle=" + std::to_string(bInheritHandle) +
@@ -968,7 +1112,7 @@ LONG WINAPI Hooking_RegCreateKeyExW(HKEY hKey, LPCWSTR lpSubKey, DWORD Reserved,
         ", samDesired=" + std::to_string(samDesired) +
         ", return=" + std::to_string(result);
     if (phkResult) {
-        log_message += ", phkResult=" + std::to_string((uintptr_t)*phkResult);
+        log_message += ", phkResult=" + wideToUtf8(GetObjectNameFromHandle(*phkResult).c_str());
     }
     if (lpdwDisposition) {
         log_message += ", lpdwDisposition=" + std::to_string(*lpdwDisposition);
@@ -981,7 +1125,7 @@ LONG WINAPI Hooking_RegDeleteKeyExW(HKEY hKey, LPCWSTR lpSubKey, REGSAM samDesir
     LONG result = OriginalRegDeleteKeyExW(hKey, lpSubKey, samDesired, Reserved);
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "RegDeleteKeyExW";
-    std::string log_message = "hKey=" + std::to_string((uintptr_t)hKey) +
+    std::string log_message = "hKey=" + wideToUtf8(GetObjectNameFromHandle(hKey).c_str()) +
         ", lpSubKey=" + wideToUtf8(lpSubKey) +
         ", samDesired=" + std::to_string(samDesired) +
         ", return=" + std::to_string(result);
@@ -993,7 +1137,7 @@ LONG WINAPI Hooking_RegDeleteKeyExA(HKEY hKey, LPCSTR lpSubKey, REGSAM samDesire
     LONG result = OriginalRegDeleteKeyExA(hKey, lpSubKey, samDesired, Reserved);
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "RegDeleteKeyExA";
-    std::string log_message = "hKey=" + std::to_string((uintptr_t)hKey) +
+    std::string log_message = "hKey=" + wideToUtf8(GetObjectNameFromHandle(hKey).c_str()) +
         ", lpSubKey=" + (lpSubKey ? std::string(lpSubKey) : "null") +
         ", samDesired=" + std::to_string(samDesired) +
         ", return=" + std::to_string(result);
@@ -1007,7 +1151,7 @@ LONG WINAPI Hooking_RegSetValueExW(HKEY hKey, LPCWSTR lpValueName, DWORD Reserve
     LONG result = OriginalRegSetValueExW(hKey, lpValueName, Reserved, dwType, lpData, cbData);
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "RegSetValueExW";
-    std::string log_message = "hKey=" + std::to_string((uintptr_t)hKey) +
+    std::string log_message = "hKey=" + wideToUtf8(GetObjectNameFromHandle(hKey).c_str()) +
         ", lpValueName=" + wideToUtf8(lpValueName) +
         ", dwType=" + std::to_string(dwType) +
         ", cbData=" + std::to_string(cbData) +
@@ -1071,7 +1215,7 @@ BOOL WINAPI Hooking_HttpSendRequestExW(HINTERNET hRequest, LPINTERNET_BUFFERSW l
     BOOL result = OriginalHttpSendRequestExW(hRequest, lpBuffersIn, lpBuffersOut, dwFlags, dwContext);
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "HttpSendRequestExW";
-    std::string log_message = "hRequest=" + std::to_string((uintptr_t)hRequest) +
+    std::string log_message = "hRequest=" + GetRequestUrl(hRequest) +
         ", return=" + std::to_string(result);
     if (lpBuffersIn) {
         log_message += ", lpBuffersIn=" + logInternetBuffersW(lpBuffersIn);
@@ -1084,7 +1228,7 @@ BOOL WINAPI Hooking_HttpSendRequestExA(HINTERNET hRequest, LPINTERNET_BUFFERSA l
     BOOL result = OriginalHttpSendRequestExA(hRequest, lpBuffersIn, lpBuffersOut, dwFlags, dwContext);
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "HttpSendRequestExA";
-    std::string log_message = "hRequest=" + std::to_string((uintptr_t)hRequest) +
+    std::string log_message = "hRequest=" + GetRequestUrl(hRequest) +
         ", return=" + std::to_string(result);
     if (lpBuffersIn) {
         log_message += ", lpBuffersIn=" + logInternetBuffersA(lpBuffersIn);
@@ -1097,7 +1241,7 @@ BOOL WINAPI Hooking_InternetReadFileExA(HINTERNET hFile, LPINTERNET_BUFFERSA lpB
     BOOL result = OriginalInternetReadFileExA(hFile, lpBuffersOut, dwFlags, dwContext);
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "InternetReadFileExA";
-    std::string log_message = "hFile=" + std::to_string((uintptr_t)hFile) +
+    std::string log_message = "hFile=" + getUrlFromHandle(hFile) +
         ", return=" + std::to_string(result);
     if (lpBuffersOut) {
         log_message += ", lpBuffersOut=" + logInternetBuffersA(lpBuffersOut);
@@ -1155,7 +1299,7 @@ BOOL WINAPI Hooking_HttpSendRequestW(HINTERNET hRequest, LPCWSTR lpszHeaders, DW
     BOOL result = OriginalHttpSendRequestW(hRequest, lpszHeaders, dwHeadersLength, lpOptional, dwOptionalLength);
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "HttpSendRequestW";
-    std::string log_message = "hRequest=" + std::to_string((uintptr_t)hRequest) +
+    std::string log_message = "hRequest=" + GetRequestUrl(hRequest) +
         ", dwHeadersLength=" + std::to_string(dwHeadersLength) +
         ", dwOptionalLength=" + std::to_string(dwOptionalLength) +
         ", return=" + std::to_string(result);
@@ -1178,7 +1322,7 @@ BOOL WINAPI Hooking_HttpSendRequestA(HINTERNET hRequest, LPCSTR lpszHeaders, DWO
     BOOL result = OriginalHttpSendRequestA(hRequest, lpszHeaders, dwHeadersLength, lpOptional, dwOptionalLength);
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "HttpSendRequestA";
-    std::string log_message = "hRequest=" + std::to_string((uintptr_t)hRequest) +
+    std::string log_message = "hRequest=" + GetRequestUrl(hRequest) +
         ", dwHeadersLength=" + std::to_string(dwHeadersLength) +
         ", dwOptionalLength=" + std::to_string(dwOptionalLength) +
         ", return=" + std::to_string(result);
@@ -1208,7 +1352,8 @@ HINTERNET WINAPI Hooking_HttpOpenRequestW(HINTERNET hConnect, LPCWSTR lpszVerb, 
         ", lpszReferrer=" + wideToUtf8(lpszReferrer) +
         ", lplpszAcceptTypes=[" + acceptTypesToString(lplpszAcceptTypes) + "]" +
         ", dwFlags=" + std::to_string(dwFlags) +
-        ", return=" + std::to_string((uintptr_t)result);
+        ", return=" + std::to_string((uintptr_t)result) +
+        ", url=" + GetRequestUrl(result);
     SendLog(timestamp + "|" + api_name + "|" + log_message);
     return result;
 }
@@ -1224,7 +1369,8 @@ HINTERNET WINAPI Hooking_HttpOpenRequestA(HINTERNET hConnect, LPCSTR lpszVerb, L
         ", lpszReferrer=" + (lpszReferrer ? std::string(lpszReferrer) : "null") +
         ", lplpszAcceptTypes=[" + acceptTypesToStringA(lplpszAcceptTypes) + "]" +
         ", dwFlags=" + std::to_string(dwFlags) +
-        ", return=" + std::to_string((uintptr_t)result);
+        ", return=" + std::to_string((uintptr_t)result) +
+        ", url=" + GetRequestUrl(result); 
     SendLog(timestamp + "|" + api_name + "|" + log_message);
     return result;
 }
@@ -1279,7 +1425,8 @@ HINTERNET WINAPI Hooking_WinHttpOpenRequest(HINTERNET hConnect, LPCWSTR pwszVerb
         ", pwszReferrer=" + wideToUtf8(pwszReferrer) +
         ", ppwszAcceptTypes=[" + acceptTypesToString(ppwszAcceptTypes) + "]" +
         ", dwFlags=" + std::to_string(dwFlags) +
-        ", return=" + std::to_string((uintptr_t)result);
+        ", return=" + std::to_string((uintptr_t)result) +
+        ", url=" + GetRequestUrl(result);
     SendLog(timestamp + "|" + api_name + "|" + log_message);
     return result;
 }
@@ -1341,7 +1488,7 @@ HRESULT WINAPI Hooking_URLDownloadToFileA(LPUNKNOWN pCaller, LPCSTR szURL, LPCST
 BOOL WINAPI Hooking_InternetWriteFile(HINTERNET hFile, LPCVOID lpBuffer, DWORD dwNumberOfBytesToWrite, LPDWORD lpdwNumberOfBytesWritten) {
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "InternetWriteFile";
-    std::string log_message = "hFile=" + std::to_string((uintptr_t)hFile) +
+    std::string log_message = "hFile=" + getUrlFromHandle(hFile) +
         ", dwNumberOfBytesToWrite=" + std::to_string(dwNumberOfBytesToWrite);
     if (lpBuffer != NULL && dwNumberOfBytesToWrite > 0) {
         DWORD base64Len = 0;
@@ -1363,7 +1510,7 @@ BOOL WINAPI Hooking_InternetReadFile(HINTERNET hFile, LPVOID lpBuffer, DWORD dwN
     BOOL result = OriginalInternetReadFile(hFile, lpBuffer, dwNumberOfBytesToRead, lpdwNumberOfBytesRead);
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "InternetReadFile";
-    std::string log_message = "hFile=" + std::to_string((uintptr_t)hFile) +
+    std::string log_message = "hFile=" + getUrlFromHandle(hFile) +
         ", dwNumberOfBytesToRead=" + std::to_string(dwNumberOfBytesToRead) +
         ", return=" + std::to_string(result);
     if (result && lpdwNumberOfBytesRead != NULL && lpBuffer != NULL) {
@@ -1433,7 +1580,7 @@ int WSAAPI Hooking_send(SOCKET s, const char* buf, int len, int flags) {
     int result = OriginalSend(s, buf, len, flags);
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "send";
-    std::string log_message = "len=" + std::to_string(len) +
+    std::string log_message = getPeerInfo(s) + ", len=" + std::to_string(len) +
         ", flags=" + std::to_string(flags);
     if (result == SOCKET_ERROR) {
         log_message += ", error=" + std::to_string(WSAGetLastError());
@@ -1456,7 +1603,7 @@ int WSAAPI Hooking_recv(SOCKET s, char* buf, int len, int flags) {
     int result = OriginalRecv(s, buf, len, flags);
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "recv";
-    std::string log_message = "len=" + std::to_string(len) +
+    std::string log_message = getPeerInfo(s) + ", len=" + std::to_string(len) +
         ", flags=" + std::to_string(flags);
     if (result == SOCKET_ERROR) {
         log_message += ", error=" + std::to_string(WSAGetLastError());
@@ -1510,7 +1657,7 @@ BOOL WINAPI Hooking_ReadFile(HANDLE hFile, LPVOID lpBuffer, DWORD nNumberOfBytes
     BOOL result = OriginalReadFile(hFile, lpBuffer, nNumberOfBytesToRead, lpNumberOfBytesRead, lpOverlapped);
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "ReadFile";
-    std::string log_message = "hFile=" + std::to_string((uintptr_t)hFile) +
+    std::string log_message = "hFile=" + wideToUtf8(GetFullPathFromHFILE(hFile).c_str()) +
         ", nNumberOfBytesToRead=" + std::to_string(nNumberOfBytesToRead) +
         ", return=" + std::to_string(result);
     if (result && lpNumberOfBytesRead != NULL) {
@@ -1530,7 +1677,7 @@ BOOL WINAPI Hooking_ReadFile(HANDLE hFile, LPVOID lpBuffer, DWORD nNumberOfBytes
 BOOL WINAPI Hooking_WriteFile(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrite, LPDWORD lpNumberOfBytesWritten, LPOVERLAPPED lpOverlapped) {
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "WriteFile";
-    std::string log_message = "hFile=" + std::to_string((uintptr_t)hFile) +
+    std::string log_message = "hFile=" + wideToUtf8(GetFullPathFromHFILE(hFile).c_str()) +
         ", nNumberOfBytesToWrite=" + std::to_string(nNumberOfBytesToWrite);
     if (lpBuffer != NULL && nNumberOfBytesToWrite > 0) {
         DWORD base64Len = 0;
@@ -1562,7 +1709,7 @@ LONG WINAPI Hooking_RegSetValueExA(HKEY hKey, LPCSTR lpValueName, DWORD Reserved
     LONG result = OriginalRegSetValueExA(hKey, lpValueName, Reserved, dwType, lpData, cbData);
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "RegSetValueExA";
-    std::string log_message = "hKey=" + std::to_string((uintptr_t)hKey) +
+    std::string log_message = "hKey=" + wideToUtf8(GetObjectNameFromHandle(hKey).c_str()) +
         ", lpValueName=" + (lpValueName ? std::string(lpValueName) : "null") +
         ", dwType=" + std::to_string(dwType) +
         ", cbData=" + std::to_string(cbData) +
@@ -1582,7 +1729,7 @@ LONG WINAPI Hooking_RegDeleteKeyW(HKEY hKey, LPCWSTR lpSubKey) {
     LONG result = OriginalRegDeleteKeyW(hKey, lpSubKey);
     std::string timestamp = getCurrentTimestamp();
     std::string api_name = "RegDeleteKeyW";
-    std::string log_message = "hKey=" + std::to_string((uintptr_t)hKey) +
+    std::string log_message = "hKey=" + wideToUtf8(GetObjectNameFromHandle(hKey).c_str()) +
         ", lpSubKey=" + (lpSubKey ? wideToUtf8(lpSubKey) : "null") +
         ", return=" + std::to_string(result);
     SendLog(timestamp + "|" + api_name + "|" + log_message);
@@ -1599,7 +1746,7 @@ LONG WINAPI Hooking_RegCreateKeyExA(HKEY hKey, LPCSTR lpSubKey, DWORD Reserved, 
         ", samDesired=" + std::to_string(samDesired) +
         ", return=" + std::to_string(result);
     if (phkResult) {
-        log_message += ", phkResult=" + std::to_string((uintptr_t)*phkResult);
+        log_message += ", phkResult=" + wideToUtf8(GetObjectNameFromHandle(*phkResult).c_str());
     }
     if (lpdwDisposition) {
         log_message += ", lpdwDisposition=" + std::to_string(*lpdwDisposition);

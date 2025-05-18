@@ -1,7 +1,10 @@
 ﻿  dllmain.cpp
+C:\Users\HP\Documents\FinalProject\FinalProject\HookingDll\dllmain.cpp(208,9): warning C4551: function call missing argument list
+  (compiling source file '/dllmain.cpp')
+  
   Generating code
-  80 of 452 functions (17.7%) were compiled, the rest were copied from previous compilation.
+  114 of 507 functions (22.5%) were compiled, the rest were copied from previous compilation.
     0 functions were new in current compilation
-    81 functions had inline decision re-evaluated but remain unchanged
+    14 functions had inline decision re-evaluated but remain unchanged
   Finished generating code
   HookingDll.vcxproj -> C:\Users\HP\Documents\FinalProject\FinalProject\MonitoringApplication\Release\HookingDll.dll
