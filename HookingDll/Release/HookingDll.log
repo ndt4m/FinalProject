@@ -1,10 +1,10 @@
-﻿  dllmain.cpp
+﻿  pch.cpp
+  dllmain.cpp
 C:\Users\HP\Documents\FinalProject\FinalProject\HookingDll\dllmain.cpp(208,9): warning C4551: function call missing argument list
   (compiling source file '/dllmain.cpp')
   
   Generating code
-  114 of 507 functions (22.5%) were compiled, the rest were copied from previous compilation.
-    0 functions were new in current compilation
-    14 functions had inline decision re-evaluated but remain unchanged
+  Previous IPDB not found, fall back to full compilation.
+  All 507 functions were compiled because no usable IPDB/IOBJ from previous compilation was found.
   Finished generating code
   HookingDll.vcxproj -> C:\Users\HP\Documents\FinalProject\FinalProject\MonitoringApplication\Release\HookingDll.dll

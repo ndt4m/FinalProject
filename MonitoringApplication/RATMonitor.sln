@@ -7,8 +7,6 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "MonitoringApplication", "Mo
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "HookingDll", "..\HookingDll\HookingDll.vcxproj", "{D910936D-4375-41A6-A1C5-556296E92969}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Testing_Program", "..\Testing_Program\Testing_Program.vcxproj", "{34B8825D-5BCE-45C1-A295-22072B982C9F}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
